@@ -10,7 +10,7 @@ on:
 
 jobs:
   ipa:
-    runs-on: macos-14
+    runs-on: macos-15          # macos-14 镜像已退役（会秒取消），15 实测可用
     timeout-minutes: 30
     defaults:
       run:

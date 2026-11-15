@@ -1,4 +1,4 @@
-﻿import Foundation
+import Foundation
 import UIKit
 import BackgroundTasks
 
@@ -43,8 +43,23 @@ final class Store: ObservableObject {
 
     // MARK: - 任务管理
     func add(_ task: WatchTask) {
+        // 同一商品只保留一条任务，避免 web/http 两套引擎同时跑同一个演出
+        if let i = tasks.firstIndex(where: { $0.productID == task.productID && !task.productID.isEmpty }) {
+            stop(tasks[i])
+            var merged = task
+            merged.id = tasks[i].id
+            if merged.showName.isEmpty { merged.showName = tasks[i].showName }
+            if merged.session.isEmpty { merged.session = tasks[i].session }
+            if merged.sessionTime.isEmpty { merged.sessionTime = tasks[i].sessionTime }
+            if merged.tierHint.isEmpty { merged.tierHint = tasks[i].tierHint }
+            if merged.landingURL.isEmpty { merged.landingURL = tasks[i].landingURL }
+            tasks[i] = merged
+            addLog(.info, "已更新监控：\(merged.title)  引擎=\(merged.engine)")
+            if merged.enabled, isRunning { start(merged) }
+            return
+        }
         tasks.append(task)
-        addLog(.info, "已加入监控：\(task.title)  阈值 \(task.threshold)")
+        addLog(.info, "已加入监控：\(task.title)  阈值 \(task.threshold)  引擎=\(task.engine)")
     }
 
     func remove(_ task: WatchTask) {
@@ -82,7 +97,10 @@ final class Store: ObservableObject {
 
     func startAll() {
         isRunning = true
-        for t in tasks where t.enabled { start(t) }
+        for t in tasks where t.enabled {
+            addLog(.info, "启动 \(t.productID) 引擎=\(t.engine) 间隔=\(t.interval)s")
+            start(t)
+        }
         addLog(.info, "✅ 监听并触发监控已启动（\(tasks.filter { $0.enabled }.count) 个任务）")
     }
 

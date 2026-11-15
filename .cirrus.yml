@@ -1,0 +1,23 @@
+# Cirrus CI：不占 GitHub 的 macOS runner，也不需要绑卡
+# 安装 GitHub App 后自动跑：https://github.com/apps/cirrus-ci/installations/new
+task:
+  name: iOS Unsigned IPA
+  macos_instance:
+    image: ghcr.io/cirruslabs/macos-sonoma-xcode:15.4
+  env:
+    LANG: en_US.UTF-8
+  install_script:
+    - brew install xcodegen
+  build_script:
+    - cd ios
+    - xcodegen generate
+    - >
+      xcodebuild -project DouyinTicketGuard.xcodeproj -scheme DouyinTicketGuard
+      -configuration Release -sdk iphoneos -derivedDataPath build
+      -destination 'generic/platform=iOS'
+      CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+    - mkdir -p Payload && cp -R build/Build/Products/Release-iphoneos/DouyinTicketGuard.app Payload/
+    - zip -qry DouyinTicketGuard-unsigned.ipa Payload
+    - ls -lh DouyinTicketGuard-unsigned.ipa
+  ipa_artifacts:
+    path: "ios/DouyinTicketGuard-unsigned.ipa"

@@ -359,6 +359,13 @@ final class Store: ObservableObject {
         if !r.cookies.isEmpty {
             cookies.merge(r.cookies) { _, new in new }
             headers.merge(r.headers) { _, new in new }
+            // 同步注入到 WKWebView 的 cookie 存储，网页引擎才能带上登录态
+            WebCookieBridge.install(r.cookies) { [weak self] n in
+                Task { @MainActor in
+                    self?.addLog(.info, "已注入 \(n) 个 cookie 到网页容器"
+                        + (n > 0 ? "（含登录态，网页引擎可直接用）" : ""))
+                }
+            }
         }
         addLog(.info, "导入完成：\(r.summary)")
         return r

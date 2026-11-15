@@ -75,7 +75,7 @@ struct HitEvent {
     let sku: Sku
     let link: URL?
 
-    var body: String {
+    var message: String {
         // 【11-27】演出名 | 看台780 有票168张（阈值1）通知打开抖音
         var prefix = ""
         if task.session.count >= 10 {

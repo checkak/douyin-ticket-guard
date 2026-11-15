@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct MonitorView: View {
     @EnvironmentObject var store: Store
@@ -55,6 +56,15 @@ struct MonitorView: View {
             }
             .navigationTitle("监控中心")
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        let lines = store.logs.suffix(200).map { $0.line }
+                        UIPasteboard.general.string = lines.joined(separator: "\n")
+                        store.addLog(.info, "诊断日志已复制到剪贴板（\(lines.count) 行）")
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         var t = WatchTask(productID: "")

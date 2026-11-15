@@ -1,4 +1,4 @@
-import SwiftUI
+﻿import SwiftUI
 import UIKit
 
 /// 对应视频 0:26 那一页：粘贴抖音订单链接 / cURL / HAR → 提取凭据与商品ID。
@@ -198,6 +198,18 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("任务引擎") {
+                    Button("把全部任务切到网页引擎") {
+                        for t in store.tasks where t.engine != "web" {
+                            var x = t
+                            x.engine = "web"
+                            store.update(x)
+                        }
+                        probeResult = "已切换 \(store.tasks.count) 个任务到网页引擎"
+                    }
+                    Text("网页引擎不依赖 Cookie 与抓包；直连引擎只在你有签名环境时才有用。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Section("接口集群") {
                     TextField("life5-normal-m-zb.amemv.com", text: $apiHost)
                         .textInputAutocapitalization(.never)

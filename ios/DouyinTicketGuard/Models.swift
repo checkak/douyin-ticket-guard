@@ -47,6 +47,36 @@ struct WatchTask: Identifiable, Codable, Hashable {
         if !skuName.isEmpty { parts.append(skuName) }
         return parts.joined(separator: " | ")
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, productID, showName, session, skuName, price, count, threshold, interval
+        case autoOpen, globalWatch, scheduleAt, enabled, linkKind, engine, landingURL
+        case sessionTime, tierHint
+    }
+
+    /// 手写解码：老版本存下来的任务缺字段也能读，且新字段自动补默认值
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? UUID()
+        productID = (try? c.decodeIfPresent(String.self, forKey: .productID)) ?? ""
+        showName = (try? c.decodeIfPresent(String.self, forKey: .showName)) ?? ""
+        session = (try? c.decodeIfPresent(String.self, forKey: .session)) ?? ""
+        skuName = (try? c.decodeIfPresent(String.self, forKey: .skuName)) ?? ""
+        price = (try? c.decodeIfPresent(Double.self, forKey: .price)) ?? 0
+        count = (try? c.decodeIfPresent(Int.self, forKey: .count)) ?? 1
+        threshold = (try? c.decodeIfPresent(Int.self, forKey: .threshold)) ?? 1
+        interval = (try? c.decodeIfPresent(Double.self, forKey: .interval)) ?? 1.5
+        autoOpen = (try? c.decodeIfPresent(Bool.self, forKey: .autoOpen)) ?? true
+        globalWatch = (try? c.decodeIfPresent(Bool.self, forKey: .globalWatch)) ?? false
+        scheduleAt = (try? c.decodeIfPresent(String.self, forKey: .scheduleAt)) ?? ""
+        enabled = (try? c.decodeIfPresent(Bool.self, forKey: .enabled)) ?? false
+        linkKind = (try? c.decodeIfPresent(String.self, forKey: .linkKind)) ?? "universal"
+        let e = (try? c.decodeIfPresent(String.self, forKey: .engine)) ?? ""
+        engine = e.isEmpty ? "web" : e          // 老任务一律升级到网页引擎
+        landingURL = (try? c.decodeIfPresent(String.self, forKey: .landingURL)) ?? ""
+        sessionTime = (try? c.decodeIfPresent(String.self, forKey: .sessionTime)) ?? ""
+        tierHint = (try? c.decodeIfPresent(String.self, forKey: .tierHint)) ?? ""
+    }
 }
 
 // MARK: - 日志

@@ -12,6 +12,7 @@ enum ImportParser {
         var price: Double = 0
         var kind: String = ""       // curl | har | link | cookie
         var url: String = ""        // 识别到的链接（展开前/后）
+        var note: String = ""       // 无法解析时的具体原因（给用户看）
 
         var hasAuth: Bool {
             !["sessionid", "sessionid_ss", "sid_guard"].filter { cookies[$0] != nil }.isEmpty
@@ -115,22 +116,46 @@ enum ImportParser {
         guard let data = text.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let log = root["log"] as? [String: Any],
-              let entries = log["entries"] as? [[String: Any]] else { return }
+              let entries = log["entries"] as? [[String: Any]] else {
+            r.note = "HAR 结构不符合预期（缺 log.entries）"
+            return
+        }
 
+        var connectCount = 0
+        var httpCount = 0
         var best: [String: Any]?
         var bestScore = -1
         for e in entries {
             guard let req = e["request"] as? [String: Any] else { continue }
+            let method = (req["method"] as? String ?? "").uppercased()
+            if method == "CONNECT" {
+                connectCount += 1          // 只有隧道建立，没有解密内容
+                continue
+            }
+            httpCount += 1
             let url = req["url"] as? String ?? ""
             var score = 0
             if url.contains("get_show_sku_info") { score += 100 }
             if url.contains("product/info") { score += 100 }
-            if url.contains("product_id") { score += 10 }
+            if url.contains("product_id") || url.contains("activity_id") { score += 10 }
             let headers = req["headers"] as? [[String: Any]] ?? []
-            if headers.contains(where: { ($0["name"] as? String)?.lowercased() == "cookie" }) { score += 5 }
+            if headers.contains(where: { ($0["name"] as? String)?.lowercased() == "cookie" }) {
+                score += 5
+            }
             if score > bestScore { bestScore = score; best = req }
         }
-        guard let req = best else { return }
+
+        guard let req = best else {
+            if connectCount > 0 {
+                r.note = "这份 HAR 只有 \(connectCount) 条 CONNECT 隧道，没有任何解密后的请求。"
+                    + "请在抓包工具里开启 HTTPS 解密（安装 CA 证书 + 打开 SSL/TLS 解密）后重抓。"
+            } else {
+                r.note = "HAR 里没有可用请求（共 \(entries.count) 条）"
+            }
+            return
+        }
+        r.note = "HAR 共 \(entries.count) 条，其中 HTTP \(httpCount) 条 / CONNECT \(connectCount) 条"
+
         for h in (req["headers"] as? [[String: Any]] ?? []) {
             guard let name = h["name"] as? String, let value = h["value"] as? String else { continue }
             if name.lowercased() == "cookie" {
@@ -138,6 +163,10 @@ enum ImportParser {
             } else {
                 r.headers[name] = value
             }
+        }
+        if let url = req["url"] as? String {
+            r.url = url
+            fillFreeText(url, into: &r)
         }
     }
 

@@ -11,6 +11,7 @@ enum ImportParser {
         var session: String = ""
         var price: Double = 0
         var kind: String = ""       // curl | har | link | cookie
+        var url: String = ""        // 识别到的链接（展开前/后）
 
         var hasAuth: Bool {
             !["sessionid", "sessionid_ss", "sid_guard"].filter { cookies[$0] != nil }.isEmpty
@@ -26,9 +27,9 @@ enum ImportParser {
     static let timeRe = try! NSRegularExpression(pattern: "([01]\\d|2[0-3]):[0-5]\\d")
     static let priceRe = try! NSRegularExpression(pattern: "(?:¥|￥)?\\s*(\\d{2,5}(?:\\.\\d{1,2})?)\\s*元")
 
-    static func parse(_ text: String) -> Result {
+    static func parse(_ raw: String) -> Result {
         var r = Result()
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let t = normalize(raw).trimmingCharacters(in: .whitespacesAndNewlines)
 
         if t.hasPrefix("{"), t.contains("\"log\"") || t.contains("\"entries\"") {
             r.kind = "har"
@@ -36,8 +37,12 @@ enum ImportParser {
         } else if t.lowercased().contains("curl") {
             r.kind = "curl"
             parseCurl(t, into: &r)
+        } else if let u = firstURL(t), u.host?.contains("douyin") == true {
+            r.kind = "link"
+            r.url = u.absoluteString
         } else if t.contains("http") {
             r.kind = "link"
+            r.url = firstURL(t)?.absoluteString ?? ""
         } else {
             r.kind = "cookie"
             r.cookies.merge(parseCookieString(t)) { a, _ in a }
@@ -45,6 +50,32 @@ enum ImportParser {
 
         fillFreeText(t, into: &r)
         return r
+    }
+
+    /// `v.douyin.com/xxx` 这种没写 scheme 的也补成 https
+    static func normalize(_ raw: String) -> String {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hosts = ["v.douyin.com", "www.douyin.com", "douyin.com", "life.douyin.com",
+                     "haohuo.jinritemai.com", "life.scsjsd.com"]
+        if hosts.contains(where: { t.lowercased().hasPrefix($0) }) {
+            return "https://" + t
+        }
+        return t
+    }
+
+    /// 从任意文本里挑出第一个 URL
+    static func firstURL(_ text: String) -> URL? {
+        guard let re = try? NSRegularExpression(pattern: #"https?://[^\s"'<>，。]+"#) else {
+            return nil
+        }
+        let ns = text as NSString
+        guard let m = re.firstMatch(in: text, range: NSRange(location: 0, length: ns.length))
+        else { return nil }
+        var s = ns.substring(with: m.range)
+        while s.hasSuffix(")") || s.hasSuffix("]") || s.hasSuffix(",") || s.hasSuffix("，") {
+            s.removeLast()
+        }
+        return URL(string: s)
     }
 
     // MARK: cURL

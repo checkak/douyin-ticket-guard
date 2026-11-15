@@ -1,4 +1,4 @@
-﻿import SwiftUI
+import SwiftUI
 import UIKit
 
 /// 对应视频 0:26 那一页：粘贴抖音订单链接 / cURL / HAR → 提取凭据与商品ID。
@@ -180,6 +180,7 @@ struct SettingsView: View {
     @State private var probeResult: String = ""
     @State private var resolving = false
     @State private var apiHost: String = ApiClient.customHost
+    @State private var showLogin = false
 
     var body: some View {
         NavigationStack {
@@ -198,6 +199,12 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("登录态") {
+                    Button("登录抖音（获取登录态）") { showLogin = true }
+                    Text("product/info 接口要求登录态：不登录会返回 200 但 0 字节。"
+                         + "在这里登录一次，cookie 会持久化到 App 内，之后监控无需再登录。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Section("任务引擎") {
                     Button("把全部任务切到网页引擎") {
                         for t in store.tasks where t.engine != "web" {
@@ -283,6 +290,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+            .sheet(isPresented: $showLogin) { LoginSheet().environmentObject(store) }
         }
     }
 

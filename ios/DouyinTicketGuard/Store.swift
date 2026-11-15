@@ -1,4 +1,4 @@
-﻿import Foundation
+import Foundation
 import UIKit
 import BackgroundTasks
 
@@ -17,6 +17,7 @@ final class Store: ObservableObject {
     @Published var isRunning: Bool = false
 
     private var loops: [UUID: Task<Void, Never>] = [:]
+    private var webEngines: [UUID: WebTicketEngine] = [:]
     private var lastStock: [UUID: [String: Int]] = [:]     // 上一轮各票档库存
     private var lastLogSig: [UUID: String] = [:]           // 上一轮库存文本，用于日志去噪
     private var lastFire: [String: Date] = [:]             // "taskid:sku" → 上次触发
@@ -71,6 +72,10 @@ final class Store: ObservableObject {
             loop.cancel()
             loops[id] = nil
         }
+        for (id, engine) in webEngines {
+            engine.stop()
+            webEngines[id] = nil
+        }
         addLog(.info, "进入后台：暂停高频轮询，改由系统后台刷新（15 分钟粒度）+ Bark 兜底")
         scheduleBackgroundRefresh()
     }
@@ -84,12 +89,18 @@ final class Store: ObservableObject {
     func stopAll() {
         isRunning = false
         for (id, loop) in loops { loop.cancel(); loops[id] = nil }
+        for (id, engine) in webEngines { engine.stop(); webEngines[id] = nil }
         addLog(.info, "监控已停止")
     }
 
     func start(_ task: WatchTask) {
         loops[task.id]?.cancel()
+        loops[task.id] = nil
         guard isRunning, task.enabled, !inBackground else { return }
+        if task.engine == "web" {
+            startWeb(task)
+            return
+        }
         let client = ApiClient(cookies: cookies, headers: headers)
         loops[task.id] = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
@@ -100,6 +111,76 @@ final class Store: ObservableObject {
     func stop(_ task: WatchTask) {
         loops[task.id]?.cancel()
         loops[task.id] = nil
+        webEngines[task.id]?.stop()
+        webEngines[task.id] = nil
+    }
+
+    // MARK: - 网页引擎（WKWebView，页面自己签名）
+
+    private func startWeb(_ task: WatchTask) {
+        webEngines[task.id]?.stop()
+        let engine = WebTicketEngine()
+        webEngines[task.id] = engine
+
+        engine.onLog = { [weak self] level, msg in
+            Task { @MainActor in
+                let lv: LogLine.Level = level == "ERR" ? .err : (level == "WARN" ? .info : .dbg)
+                self?.addLog(lv, "\(task.productID): \(msg)")
+            }
+        }
+        engine.onStatus = { [weak self] status in
+            Task { @MainActor in self?.addLog(.dbg, "\(task.productID) 引擎状态: \(status)") }
+        }
+        engine.onMeta = { [weak self] meta in
+            Task { @MainActor in self?.applyMeta(meta, taskID: task.id) }
+        }
+        engine.onSkus = { [weak self] skus in
+            Task { @MainActor in
+                guard let self, let t = self.tasks.first(where: { $0.id == task.id }) else { return }
+                self.evaluate(task: t, skus: skus)
+            }
+        }
+
+        let landing = task.landingURL.isEmpty
+            ? Store.landingURL(for: task.productID)
+            : task.landingURL
+        guard let url = URL(string: landing) else {
+            addLog(.err, "落地页 URL 无效：\(landing)")
+            return
+        }
+        addLog(.info, "开始轮询（网页引擎）\(task.title)")
+        engine.start(landingURL: url, interval: task.interval)
+    }
+
+    /// 团购/演出落地页：不依赖抓包也能构造
+    static func landingURL(for productID: String) -> String {
+        "https://life.scsjsd.com/falcon/poi_mwa/trade_detail"
+            + "?app=aweme&source=groupbuy&is_share_page=1&hide_nav_bar=1"
+            + "&should_full_screen=1&activity_id=\(productID)"
+    }
+
+    private func applyMeta(_ meta: ApiClient.Meta, taskID: UUID) {
+        guard let i = tasks.firstIndex(where: { $0.id == taskID }) else { return }
+        var changed = false
+        if !meta.title.isEmpty, tasks[i].showName.isEmpty {
+            tasks[i].showName = meta.title
+            changed = true
+        }
+        if !meta.session.isEmpty, tasks[i].sessionTime != meta.session {
+            tasks[i].sessionTime = meta.session
+            if tasks[i].session.isEmpty { tasks[i].session = meta.session }
+            changed = true
+        }
+        if let minP = meta.priceHints.min(), let maxP = meta.priceHints.max() {
+            let hint = minP == maxP ? "¥\(Int(minP))" : "¥\(Int(minP))~¥\(Int(maxP))"
+            if tasks[i].tierHint != hint {
+                tasks[i].tierHint = hint
+                changed = true
+            }
+        }
+        if changed {
+            addLog(.info, "已补齐演出信息：\(tasks[i].showName) · \(tasks[i].sessionTime) · \(tasks[i].tierHint)")
+        }
     }
 
     private func loop(task: WatchTask, client: ApiClient) async {
@@ -265,10 +346,13 @@ final class Store: ObservableObject {
         return r
     }
 
-    func quickAdd(productID: String, name: String, session: String) {
+    func quickAdd(productID: String, name: String, session: String, landing: String = "") {
         var t = WatchTask(productID: productID)
         t.showName = name
         t.session = session
+        t.sessionTime = session
+        t.landingURL = landing
+        t.engine = "web"
         t.enabled = false
         add(t)
     }

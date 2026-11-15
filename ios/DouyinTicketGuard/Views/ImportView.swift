@@ -201,8 +201,18 @@ struct SettingsView: View {
 
                 Section("登录态") {
                     Button("登录抖音（获取登录态）") { showLogin = true }
-                    Text("product/info 接口要求登录态：不登录会返回 200 但 0 字节。"
-                         + "在这里登录一次，cookie 会持久化到 App 内，之后监控无需再登录。")
+                    Button("检测网页容器登录态") {
+                        WebCookieBridge.snapshot { names, logged in
+                            let key = ["sessionid", "sessionid_ss", "sid_guard", "uid_tt",
+                                       "d_ticket", "ttwid", "msToken"]
+                            let hit = names.filter { key.contains($0) }
+                            probeResult = logged
+                                ? "已登录 ✅ 关键 cookie：\(hit.joined(separator: ", "))"
+                                : "未登录 ❌ 容器里 \(names.count) 个 cookie（\(hit.joined(separator: ", "))）"
+                        }
+                    }
+                    Text("product/info 与 poi/public/detail_web 都会因 need_login 返回空/打码。"
+                         + "登录一次、或在「导入」里粘 Cookie（会自动注入网页容器），网页引擎就能拿到数据。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("任务引擎") {

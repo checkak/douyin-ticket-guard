@@ -55,6 +55,32 @@ struct WatchTask: Identifiable, Codable, Hashable {
     }
 
     /// 手写解码：老版本存下来的任务缺字段也能读，且新字段自动补默认值
+    init(productID: String, showName: String = "", session: String = "",
+         skuName: String = "", price: Double = 0, count: Int = 1, threshold: Int = 1,
+         interval: Double = 1.5, autoOpen: Bool = true, globalWatch: Bool = false,
+         scheduleAt: String = "", enabled: Bool = false, linkKind: String = "universal",
+         engine: String = "web", landingURL: String = "", sessionTime: String = "",
+         tierHint: String = "") {
+        self.id = UUID()
+        self.productID = productID
+        self.showName = showName
+        self.session = session
+        self.skuName = skuName
+        self.price = price
+        self.count = count
+        self.threshold = threshold
+        self.interval = interval
+        self.autoOpen = autoOpen
+        self.globalWatch = globalWatch
+        self.scheduleAt = scheduleAt
+        self.enabled = enabled
+        self.linkKind = linkKind
+        self.engine = engine
+        self.landingURL = landingURL
+        self.sessionTime = sessionTime
+        self.tierHint = tierHint
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? UUID()

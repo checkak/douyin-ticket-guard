@@ -1,33 +1,57 @@
-import SwiftUI
+﻿import SwiftUI
 import UIKit
 
 /// 对应视频 0:26 那一页：粘贴抖音订单链接 / cURL / HAR → 提取凭据与商品ID。
+/// 短链（v.douyin.com/xxx）需要真去跟跳转，见 LinkResolver。
 struct ImportView: View {
     @EnvironmentObject var store: Store
     @State private var text: String = ""
     @State private var result: ImportParser.Result?
+    @State private var hops: [String] = []
+    @State private var isGroupBuy = false
+    @State private var busy = false
+    @State private var status: String = ""
     @State private var showAlert = false
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    Text("粘贴抖音订单链接 / cURL / HAR。\n· cURL → 直接提取 Cookie，可拉库存\n· HAR → 挑出 get_show_sku_info 条目\n· 订单链接 → 提取商品ID、场次、价格")
+                    Text("粘贴抖音订单链接 / cURL / HAR。\n· 短链（v.douyin.com）会自动跟跳转拿商品ID\n· cURL → 直接提取 Cookie，可拉库存\n· HAR → 挑出 get_show_sku_info 条目")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+
                 Section("抓包内容") {
                     TextEditor(text: $text)
                         .font(.system(.caption, design: .monospaced))
-                        .frame(minHeight: 160)
+                        .frame(minHeight: 140)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
                     HStack {
                         Button("从剪贴板读取") {
                             if let s = UIPasteboard.general.string { text = s }
                         }
                         Spacer()
-                        Button("解析") { parse() }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(text.isEmpty)
+                        Button {
+                            Task { await runParse() }
+                        } label: {
+                            if busy {
+                                HStack(spacing: 6) {
+                                    ProgressView().scaleEffect(0.8)
+                                    Text("解析中")
+                                }
+                            } else {
+                                Text("解析")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(text.isEmpty || busy)
+                    }
+                    if !status.isEmpty {
+                        Text(status)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -41,12 +65,37 @@ struct ImportView: View {
                         if r.price > 0 {
                             LabeledContent("价格", value: String(format: "%.2f", r.price))
                         }
+                        if !r.url.isEmpty, r.kind == "link" {
+                            LabeledContent("链接", value: String(r.url.prefix(58)) + "…")
+                        }
                     }
+
+                    if !hops.isEmpty {
+                        Section("跳转链") {
+                            ForEach(Array(hops.enumerated()), id: \.offset) { _, h in
+                                Text(h)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                            }
+                        }
+                    }
+
+                    if isGroupBuy {
+                        Section {
+                            Label("团购商品（source=groupbuy）：链接只能给商品ID，"
+                                  + "要拉库存还需要再粘一条 cURL 换 Cookie。",
+                                  systemImage: "exclamationmark.triangle")
+                                .font(.footnote)
+                        }
+                    }
+
                     if !r.productID.isEmpty {
                         Section {
                             Button("用该商品建任务（先不启用）") {
                                 store.quickAdd(productID: r.productID,
-                                               name: "", session: r.session)
+                                               name: "",
+                                               session: r.session)
                                 showAlert = true
                             }
                         }
@@ -71,14 +120,55 @@ struct ImportView: View {
         }
     }
 
-    private func parse() {
-        result = store.importText(text)
+    // MARK: - 解析流程
+
+    private func runParse() async {
+        busy = true
+        hops = []
+        isGroupBuy = false
+        status = "解析中…"
+        defer { busy = false }
+
+        let normalized = ImportParser.normalize(text)
+        var r = ImportParser.parse(normalized)
+        status = "来源 \(r.kind)，识别到 \(r.cookies.count) 个 Cookie"
+
+        // 短链/落地页：本地正则没结果时，真去跟一次跳转
+        if r.productID.isEmpty, let url = ImportParser.firstURL(normalized) {
+            status = "正在展开短链…"
+            let res = await LinkResolver.resolve(url)
+            hops = res.hops
+            isGroupBuy = res.isGroupBuy
+            if !res.productID.isEmpty {
+                r.productID = res.productID
+                status = "展开成功，商品ID \(res.productID)"
+            } else {
+                status = "展开失败：\(res.note)"
+            }
+            if let final = res.finalURL, final.absoluteString != url.absoluteString {
+                r.url = final.absoluteString
+            }
+            // 落地页 URL 里可能带日期等，再补一轮
+            if let final = res.finalURL {
+                let again = ImportParser.parse(final.absoluteString)
+                if r.session.isEmpty { r.session = again.session }
+                if r.price == 0 { r.price = again.price }
+            }
+        }
+
+        if !r.cookies.isEmpty {
+            store.cookies.merge(r.cookies) { _, new in new }
+            store.headers.merge(r.headers) { _, new in new }
+        }
+        store.addLog(.info, "导入完成：\(r.kind) · cookie \(r.cookies.count) · 商品ID \(r.productID.isEmpty ? "未识别" : r.productID)")
+        result = r
     }
 }
 
 struct SettingsView: View {
     @EnvironmentObject var store: Store
     @State private var probeResult: String = ""
+    @State private var resolving = false
 
     var body: some View {
         NavigationStack {
@@ -100,14 +190,44 @@ struct SettingsView: View {
                 Section("深链探测") {
                     Text("哪个方式能落到「确认订单」，就在任务里选哪个。")
                         .font(.footnote).foregroundStyle(.secondary)
+                    if store.tasks.isEmpty {
+                        Text("先建一条任务").font(.caption).foregroundStyle(.secondary)
+                    }
                     ForEach(previewLinks, id: \.0) { item in
-                        Button(item.0) {
-                            DeepLink.open(item.1)
-                        }
-                        .font(.caption)
+                        Button(item.0) { DeepLink.open(item.1) }
+                            .font(.caption)
                     }
                     if !probeResult.isEmpty {
                         Text(probeResult).font(.caption).foregroundStyle(.green)
+                    }
+                }
+
+                Section("短链自测") {
+                    Text("用 LinkResolver 现场跟一遍跳转，确认网络链路没问题。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    TextField("https://v.douyin.com/xxxx/", text: $testLink)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.system(.caption, design: .monospaced))
+                    Button(resolving ? "跟进中…" : "测试展开") {
+                        Task {
+                            resolving = true
+                            defer { resolving = false }
+                            guard let u = URL(string: ImportParser.normalize(testLink)) else {
+                                probeResult = "链接格式不对"
+                                return
+                            }
+                            let r = await LinkResolver.resolve(u)
+                            probeResult = r.productID.isEmpty
+                                ? "失败：\(r.note)"
+                                : "成功：商品ID \(r.productID)"
+                            testHops = r.hops
+                        }
+                    }
+                    .disabled(resolving || testLink.isEmpty)
+                    ForEach(Array(testHops.enumerated()), id: \.offset) { _, h in
+                        Text(h).font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -126,6 +246,9 @@ struct SettingsView: View {
             .navigationTitle("设置")
         }
     }
+
+    @State private var testLink: String = "https://v.douyin.com/erD9I8GpPaU/"
+    @State private var testHops: [String] = []
 
     private var previewLinks: [(String, URL)] {
         guard let first = store.tasks.first else { return [] }

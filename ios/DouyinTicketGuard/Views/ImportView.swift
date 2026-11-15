@@ -103,8 +103,9 @@ struct ImportView: View {
                         Section {
                             Button("用该商品建任务（先不启用）") {
                                 store.quickAdd(productID: r.productID,
-                                               name: "",
-                                               session: r.session)
+                                               name: r.kind == "link" ? "" : "",
+                                               session: r.session,
+                                               landing: r.url.hasPrefix("http") ? r.url : "")
                                 showAlert = true
                             }
                         }

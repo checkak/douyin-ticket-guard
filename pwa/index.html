@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="票档监控">
+<meta name="theme-color" content="#f24b2c">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' rx='26' fill='%23f24b2c'/%3E%3Ctext x='60' y='78' font-size='58' text-anchor='middle' fill='white'%3E%E7%A5%A8%3C/text%3E%3C/svg%3E">
+<title>票档监控</title>
+<style>
+  :root { --bg:#f6f6f8; --card:#fff; --line:#e6e6ea; --accent:#f24b2c; --ok:#18a058; --err:#d03050; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; font: 15px/1.55 -apple-system, "PingFang SC", system-ui, sans-serif;
+         background: var(--bg); color:#111; padding: env(safe-area-inset-top) 12px 90px; }
+  h1 { font-size: 17px; margin: 14px 2px 10px; }
+  .card { background: var(--card); border-radius: 14px; padding: 12px; margin-bottom: 12px;
+          box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+  .row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+  .row:last-child { margin-bottom:0; }
+  label { font-size:12px; color:#666; min-width:64px; }
+  input[type=text], input[type=number], textarea {
+    flex:1; width:100%; border:1px solid var(--line); border-radius:9px; padding:9px 10px;
+    font: inherit; background:#fbfbfd; }
+  textarea { min-height:96px; font-family: ui-monospace, Menlo, monospace; font-size:12px; }
+  button { border:0; border-radius:10px; padding:11px 14px; font: inherit; font-weight:600;
+           background:#e9e9ee; color:#111; }
+  button.primary { background: var(--accent); color:#fff; }
+  button.green { background: var(--ok); color:#fff; }
+  button.red { background: var(--err); color:#fff; }
+  .btnbar { display:flex; gap:8px; }
+  #badge { font-size:12px; color:#666; }
+  #skus { display:grid; grid-template-columns: 1fr 1fr; gap:8px; }
+  .sku { border:1px solid var(--line); border-radius:10px; padding:9px; font-size:13px; background:#fbfbfd; }
+  .sku.ok { border-color: var(--ok); background:#f0fbf5; }
+  .sku .price { color: var(--accent); font-weight:700; margin-left:6px; }
+  .sku .stock { color:#666; font-size:12px; margin-top:2px; }
+  #log { height: 190px; overflow:auto; font-family: ui-monospace, Menlo, monospace;
+         font-size: 11px; background:#111; color:#ddd; border-radius:10px; padding:8px; }
+  #log .hit { color:#3ddc84; } #log .err { color:#ff6b6b; } #log .dbg { color:#8a8a8a; }
+  #result { font-family: ui-monospace, Menlo, monospace; font-size:11px; color:#444;
+            white-space:pre-wrap; margin-top:8px; }
+  .hint { font-size:12px; color:#777; line-height:1.6; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#eee; font-size:11px; }
+</style>
+</head>
+<body>
+  <h1>🎤 抖音票档监控 <span id="badge" class="pill">监控已停止</span></h1>
+
+  <div class="card">
+    <div class="hint">粘贴抖音订单链接 / cURL / HAR，然后「解析」。<br>
+      浏览器直连会被 CORS 拦，务必在下面填代理（见 README 的 Worker 代码）。</div>
+    <textarea id="paste" placeholder="curl -X GET 'https://life5-normal-m-zb.amemv.com/...' -H 'Cookie: sessionid=...'"></textarea>
+    <div class="btnbar" style="margin-top:8px">
+      <button id="pasteFromClip">从剪贴板读取</button>
+      <button id="parse" class="primary">解析</button>
+    </div>
+    <div id="result"></div>
+  </div>
+
+  <div class="card">
+    <div class="row"><label>商品ID</label><input id="productId" type="text" inputmode="numeric" placeholder="16 位数字"></div>
+    <div class="row"><label>演出名</label><input id="showName" type="text" placeholder="薛之谦…无锡站"></div>
+    <div class="row"><label>场次</label><input id="session" type="text" placeholder="2026-11-27 19:30"></div>
+    <div class="row"><label>票档</label><input id="sku" type="text" placeholder="点下面的票档自动填"></div>
+    <div class="row"><label>人数</label><input id="count" type="number" value="1" min="1" max="6"></div>
+    <div class="row"><label>阈值</label><input id="threshold" type="number" value="1" min="1"></div>
+    <div class="row"><label>间隔s</label><input id="interval" type="number" value="1.5" step="0.5" min="0.5"></div>
+    <div class="row"><label>Bark</label><input id="bark" type="text" placeholder="Bark Device Key（可选）"></div>
+    <div class="row"><label>代理</label><input id="proxy" type="text" placeholder="https://your-worker.workers.dev/proxy"></div>
+    <div class="row">
+      <label>自动打开</label><input id="autoOpen" type="checkbox" checked style="flex:0">
+      <label style="min-width:auto">全局监控</label><input id="global" type="checkbox" style="flex:0">
+    </div>
+    <div class="btnbar" style="margin-top:10px">
+      <button id="toggle" class="green" style="flex:1">开始监控</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="font-size:12px;color:#666;margin-bottom:8px">票档（点一下选中）</div>
+    <div id="skus"></div>
+  </div>
+
+  <div class="card">
+    <div style="font-size:12px;color:#666;margin-bottom:8px">实时日志</div>
+    <div id="log"></div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

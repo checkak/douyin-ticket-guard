@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 鍑嵁 / 杩愯鎬侊紙缁濆涓嶈杩涗粨搴擄級
+cookies.json
+headers.json
+tasks.json
+logs/
+schema.json
+page.html
+page_data.txt
+trade_detail.js
+dom.html
+*.har
+
+# Xcode / 鏋勫缓浜х墿
+ios/build/
+ios/Payload/
+build/
+DerivedData/
+*.ipa
+*.ipa.sha256
+ios/ipa.sha256
+ios/build.log
+*.xcodeproj
+ios/DouyinTicketGuard/Info.plist
+
+# 绯荤粺
+.DS_Store
+Thumbs.db
+
+# GitHub token（设备码授权自动写入）
+.gh_token

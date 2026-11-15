@@ -1,0 +1,275 @@
+import Foundation
+import UIKit
+import BackgroundTasks
+
+/// 全局状态 + 监控引擎。
+/// 视频 1:08–1:17 那个「监控中心」就是它：任务、阈值、自动下单开关（这里保留字段）、
+/// 任务延迟、全局监控、定时、实时日志。
+@MainActor
+final class Store: ObservableObject {
+
+    // MARK: 持久化
+    @Published var tasks: [WatchTask] = [] { didSet { save() } }
+    @Published var logs: [LogLine] = []
+    @Published var cookies: [String: String] = [:] { didSet { save() } }
+    @Published var headers: [String: String] = [:] { didSet { save() } }
+    @Published var barkKey: String = "" { didSet { save() } }
+    @Published var isRunning: Bool = false
+
+    private var loops: [UUID: Task<Void, Never>] = [:]
+    private var lastStock: [UUID: [String: Int]] = [:]     // 上一轮各票档库存
+    private var lastLogSig: [UUID: String] = [:]           // 上一轮库存文本，用于日志去噪
+    private var lastFire: [String: Date] = [:]             // "taskid:sku" → 上次触发
+    private var inBackground = false
+
+    private let refireCooldown: TimeInterval = 20
+    private static let storeKey = "dtg.state.v1"
+    private static let bgTaskID = "com.local.dtguard.refresh"
+
+    init() {
+        load()
+        Notifier.shared.requestAuthorization()
+        registerBackgroundTask()
+        addLog(.info, "App 就绪：\(tasks.count) 个任务，Cookie \(cookies.count) 个")
+    }
+
+    // MARK: - 日志
+    func addLog(_ level: LogLine.Level, _ text: String) {
+        let line = LogLine(at: Date(), level: level, text: text)
+        logs.append(line)
+        if logs.count > 400 { logs.removeFirst(logs.count - 400) }
+    }
+
+    // MARK: - 任务管理
+    func add(_ task: WatchTask) {
+        tasks.append(task)
+        addLog(.info, "已加入监控：\(task.title)  阈值 \(task.threshold)")
+    }
+
+    func remove(_ task: WatchTask) {
+        stop(task)
+        tasks.removeAll { $0.id == task.id }
+    }
+
+    func update(_ task: WatchTask) {
+        guard let i = tasks.firstIndex(where: { $0.id == task.id }) else { return }
+        tasks[i] = task
+        if task.enabled { start(task) } else { stop(task) }
+    }
+
+    // MARK: - 引擎
+    func engineEnterForeground() {
+        inBackground = false
+        guard isRunning else { return }
+        for t in tasks where t.enabled { start(t) }
+    }
+
+    func engineEnterBackground() {
+        inBackground = true
+        // 后台无法持续轮询：停掉前台高频循环，交给 BGAppRefresh + Bark
+        for (id, loop) in loops {
+            loop.cancel()
+            loops[id] = nil
+        }
+        addLog(.info, "进入后台：暂停高频轮询，改由系统后台刷新（15 分钟粒度）+ Bark 兜底")
+        scheduleBackgroundRefresh()
+    }
+
+    func startAll() {
+        isRunning = true
+        for t in tasks where t.enabled { start(t) }
+        addLog(.info, "✅ 监听并触发监控已启动（\(tasks.filter { $0.enabled }.count) 个任务）")
+    }
+
+    func stopAll() {
+        isRunning = false
+        for (id, loop) in loops { loop.cancel(); loops[id] = nil }
+        addLog(.info, "监控已停止")
+    }
+
+    func start(_ task: WatchTask) {
+        loops[task.id]?.cancel()
+        guard isRunning, task.enabled, !inBackground else { return }
+        let client = ApiClient(cookies: cookies, headers: headers)
+        loops[task.id] = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            await self.loop(task: task, client: client)
+        }
+    }
+
+    func stop(_ task: WatchTask) {
+        loops[task.id]?.cancel()
+        loops[task.id] = nil
+    }
+
+    private func loop(task: WatchTask, client: ApiClient) async {
+        var failures = 0
+        await addLog(.info, "开始轮询 \(task.title) 间隔 \(task.interval)s")
+
+        while !Task.isCancelled {
+            let t0 = Date()
+            do {
+                let skus = try await client.fetchSkus(productID: task.productID)
+                await evaluate(task: task, skus: skus)
+                failures = 0
+            } catch {
+                failures += 1
+                await addLog(.err, "\(task.title) 拉库存失败(\(failures)): \(error.localizedDescription)")
+                if failures >= 3 {
+                    try? await Task.sleep(nanoseconds: UInt64(min(failures, 20)) * 1_000_000_000)
+                }
+            }
+            let elapsed = Date().timeIntervalSince(t0)
+            let jitter = Double.random(in: 0...0.2)
+            let sleep = max(0.3, task.interval + jitter - elapsed)
+            try? await Task.sleep(nanoseconds: UInt64(sleep * 1_000_000_000))
+        }
+    }
+
+    private func evaluate(task: WatchTask, skus: [Sku]) async {
+        let prev = lastStock[task.id] ?? [:]
+        var hits: [Sku] = []
+
+        let watched: [Sku]
+        if task.globalWatch {
+            watched = skus
+        } else {
+            let match = skus.first { $0.name.replacingOccurrences(of: " ", with: "")
+                                      .contains(task.skuName.replacingOccurrences(of: " ", with: "")) }
+            let byPrice = skus.first { abs($0.priceYuan - task.price) < 0.5 }
+            watched = [match ?? byPrice ?? skus[0]]
+        }
+
+        for sku in watched {
+            guard sku.stock >= task.threshold else { continue }
+            let before = prev[sku.name]
+            let isFirst = (before == nil)
+            let crossed = (before ?? 0) < task.threshold
+            if !(isFirst || crossed) { continue }
+            let key = "\(task.id):\(sku.name)"
+            if let last = lastFire[key], Date().timeIntervalSince(last) < refireCooldown { continue }
+            hits.append(sku)
+        }
+
+        var snapshot = prev
+        for s in skus { snapshot[s.name] = s.stock }
+        lastStock[task.id] = snapshot
+
+        if hits.isEmpty {
+            let text = watched.map { "\($0.name):\($0.stock)" }.joined(separator: " / ")
+            let sig = text.isEmpty ? "空" : text
+            if lastLogSig[task.id] != sig {
+                lastLogSig[task.id] = sig
+                addLog(.dbg, "\(task.title) → \(sig)")
+            }
+            return
+        }
+
+        for sku in hits {
+            lastFire["\(task.id):\(sku.name)"] = Date()
+            let link = DeepLink.build(kind: task.linkKind, productID: task.productID,
+                                      session: task.session, sku: sku.name, count: task.count)
+            let event = HitEvent(task: task, sku: sku, link: link)
+            addLog(.hit, event.body())
+            fire(event)
+        }
+    }
+
+    private func fire(_ event: HitEvent) {
+        Notifier.shared.local(title: "发现库存", body: event.body())
+        Notifier.shared.ring()
+        Notifier.shared.bark(deviceKey: barkKey, title: "发现库存", body: event.body(),
+                             url: event.link?.absoluteString) { [weak self] ok in
+            Task { @MainActor in
+                self?.addLog(ok ? .info : .err, ok ? "Bark 推送成功" : "Bark 推送失败（检查 Key）")
+            }
+        }
+        if event.task.autoOpen, let link = event.link {
+            DeepLink.open(link)
+            addLog(.info, "唤起抖音：\(link.absoluteString.prefix(90))")
+        }
+    }
+
+    // MARK: - 后台刷新
+    private func registerBackgroundTask() {
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.bgTaskID, using: nil) { task in
+            guard let refresh = task as? BGAppRefreshTask else { return }
+            self.handleBackgroundRefresh(refresh)
+        }
+    }
+
+    private func scheduleBackgroundRefresh() {
+        let req = BGAppRefreshTaskRequest(identifier: Self.bgTaskID)
+        req.earliestBeginDate = Date(timeIntervalSinceNow: 60)
+        do {
+            try BGTaskScheduler.shared.submit(req)
+        } catch {
+            addLog(.err, "后台刷新注册失败: \(error.localizedDescription)")
+        }
+    }
+
+    private nonisolated func handleBackgroundRefresh(_ task: BGAppRefreshTask) {
+        Task { @MainActor in
+            let work = Task { await self.backgroundProbe() }
+            task.expirationHandler = { work.cancel() }
+            await work.value
+            task.setTaskCompleted(success: true)
+            self.scheduleBackgroundRefresh()
+        }
+    }
+
+    private func backgroundProbe() async {
+        let client = ApiClient(cookies: cookies, headers: headers)
+        for t in tasks where t.enabled {
+            do {
+                let skus = try await client.fetchSkus(productID: t.productID)
+                await evaluate(task: t, skus: skus)
+            } catch {
+                addLog(.dbg, "后台刷新 \(t.productID) 失败: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - 持久化
+    private struct Persisted: Codable {
+        var tasks: [WatchTask]
+        var cookies: [String: String]
+        var headers: [String: String]
+        var barkKey: String
+    }
+
+    private func save() {
+        let p = Persisted(tasks: tasks, cookies: cookies, headers: headers, barkKey: barkKey)
+        if let data = try? JSONEncoder().encode(p) {
+            UserDefaults.standard.set(data, forKey: Self.storeKey)
+        }
+    }
+
+    private func load() {
+        guard let data = UserDefaults.standard.data(forKey: Self.storeKey),
+              let p = try? JSONDecoder().decode(Persisted.self, from: data) else { return }
+        tasks = p.tasks
+        cookies = p.cookies
+        headers = p.headers
+        barkKey = p.barkKey
+    }
+
+    // MARK: - 导入
+    func importText(_ text: String) -> ImportParser.Result {
+        let r = ImportParser.parse(text)
+        if !r.cookies.isEmpty {
+            cookies.merge(r.cookies) { _, new in new }
+            headers.merge(r.headers) { _, new in new }
+        }
+        addLog(.info, "导入完成：\(r.summary)")
+        return r
+    }
+
+    func quickAdd(productID: String, name: String, session: String) {
+        var t = WatchTask(productID: productID)
+        t.showName = name
+        t.session = session
+        t.enabled = false
+        add(t)
+    }
+}

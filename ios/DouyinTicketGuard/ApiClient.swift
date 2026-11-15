@@ -8,8 +8,27 @@ import Foundation
 ///
 /// 响应 schema 未公开，这里用「容错遍历」：任何同时含库存键 + 价格键的节点都算一个票档。
 struct ApiClient {
-    static let host = "https://life5-normal-m-zb.amemv.com"
+    /// 实测到的区域集群（同一条接口在不同集群上都存在，路由决定用哪个）
+    static let defaultHosts = [
+        "life5-normal-m-zb.amemv.com",
+        "life5-normal-m-zjg.amemv.com",
+        "life5-normal-m-gl2.amemv.com",
+        "life5-normal-m-lf.amemv.com",
+    ]
+
+    /// 用户在设置里手动指定的集群（留空则自动轮询）
+    static var customHost: String {
+        get { UserDefaults.standard.string(forKey: "dtg.apiHost") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "dtg.apiHost") }
+    }
+
+    var hosts: [String] {
+        let c = ApiClient.customHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        return c.isEmpty ? ApiClient.defaultHosts : [c]
+    }
+
     static let skuPath = "/data/v1/life/general/facade/get_show_sku_info"
+    static let productInfoPath = "/aweme/v2/poi/user/trade/product/info/"
 
     static let userAgent = "com.ss.android.ugc.aweme.lite/3290 (iPhone; iOS 15.1; Scale/3.00) "
 
@@ -46,9 +65,21 @@ struct ApiClient {
         self.extraHeaders = headers
     }
 
-    /// 拉一次票档快照
+    /// 拉一次票档快照：按集群顺序试，谁先返回非空 JSON 就用谁
     func fetchSkus(productID: String) async throws -> [Sku] {
-        var comps = URLComponents(string: ApiClient.host + ApiClient.skuPath)!
+        var errors: [String] = []
+        for host in hosts {
+            do {
+                return try await fetchSkus(productID: productID, host: host)
+            } catch {
+                errors.append("\(host): \(error.localizedDescription)")
+            }
+        }
+        throw ApiError.allHostsFailed(errors.joined(separator: " | "))
+    }
+
+    private func fetchSkus(productID: String, host: String) async throws -> [Sku] {
+        var comps = URLComponents(string: "https://" + host + ApiClient.skuPath)!
         var items = ApiClient.baseParams.map { URLQueryItem(name: $0.key, value: $0.value) }
         items.append(URLQueryItem(name: "device_id", value: ApiClient.randomDeviceID()))
         items.append(URLQueryItem(name: "cdid", value: UUID().uuidString))
@@ -142,6 +173,7 @@ struct ApiClient {
         case transport(String)
         case emptyBody(Int)
         case noSku(String)
+        case allHostsFailed(String)
 
         var errorDescription: String? {
             switch self {
@@ -149,6 +181,8 @@ struct ApiClient {
             case .emptyBody(let code):
                 return "HTTP \(code) 但响应体为空 —— 缺 web 端签名/Cookie（msToken、a_bogus、sid_guard）"
             case .noSku(let m): return m
+            case .allHostsFailed(let m):
+                return "所有集群都失败（\(ApiClient.defaultHosts.count) 个）: \(m)"
             }
         }
     }

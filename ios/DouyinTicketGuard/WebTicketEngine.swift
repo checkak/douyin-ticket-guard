@@ -28,6 +28,9 @@ final class WebTicketEngine: NSObject, ObservableObject {
     private var reloadTimer: Timer?
     private var seenPaths = Set<String>()
     private var targetOrigin = "life.scsjsd.com"
+    private var pendingLanding: URL?
+    private var warmed = false
+    private var lastEmptyWarn: Date = .distantPast
 
     static let awemeUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_2 like Mac OS X) " +
         "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 " +
@@ -64,9 +67,17 @@ final class WebTicketEngine: NSObject, ObservableObject {
         gotData = false
         tick = 0
         seenPaths.removeAll()
+        pendingLanding = landingURL
 
         onLog?("INFO", "网页引擎启动 \(landingURL.absoluteString.prefix(86))")
-        wv.load(URLRequest(url: landingURL, timeoutInterval: 25))
+        // 先预热：拿 ttwid / s_v_web_id，并复用 App 内已登录的 cookie
+        if warmed {
+            wv.load(URLRequest(url: landingURL, timeoutInterval: 25))
+        } else {
+            onLog?("DEBUG", "预热 www.douyin.com（补 ttwid / 复用登录态）")
+            wv.load(URLRequest(url: URL(string: "https://www.douyin.com/")!,
+                               timeoutInterval: 20))
+        }
     }
 
     func stop() {
@@ -121,14 +132,20 @@ final class WebTicketEngine: NSObject, ObservableObject {
     }
 
     private func ingest(body: String, url: String) {
-        let looksLikeProduct = body.contains("sku") || body.contains("stock")
-            || body.contains("price") || body.contains("activity")
-        guard looksLikeProduct else {
-            onLog?("DEBUG", "响应非商品数据（\(body.count)B）\(url.suffix(46))")
+        if body.isEmpty {
+            let now = Date()
+            if now.timeIntervalSince(lastEmptyWarn) > 12 {
+                lastEmptyWarn = now
+                onLog?("WARN", "product/info 返回 200 但 0 字节 —— 该接口要登录态，"
+                    + "去「设置 → 登录抖音」登录一次即可")
+            }
             return
         }
         guard let data = body.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) else { return }
+              let obj = try? JSONSerialization.jsonObject(with: data) else {
+            onLog?("DEBUG", "非 JSON 响应（\(body.count)B）\(url.suffix(46))")
+            return
+        }
         let skus = ApiClient.extractSkus(obj)
         let meta = ApiClient.extractMeta(obj)
         if !skus.isEmpty || !meta.isEmpty {
@@ -268,9 +285,31 @@ extension WebTicketEngine: WKScriptMessageHandler {
 extension WebTicketEngine: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         let url = webView.url?.absoluteString ?? "-"
+
+        // 第一阶段：预热页加载完 → 跳真正落地页
+        if !warmed, let landing = pendingLanding,
+           !url.contains("trade_detail") {
+            warmed = true
+            onLog?("DEBUG", "预热完成，进入落地页")
+            webView.load(URLRequest(url: landing, timeoutInterval: 25))
+            return
+        }
+
         onStatus?("页面加载完成")
         onLog?("INFO", "页面已加载 \(url.prefix(96))")
         scheduleNudges()
+
+        // 页面若报「页面异常」，多半就是没登录
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard let self, let wv = self.webView else { return }
+            wv.evaluateJavaScript("document.body ? document.body.innerText.slice(0,120) : ''") { v, _ in
+                let text = (v as? String) ?? ""
+                if text.contains("异常") || text.contains("稍后重试") {
+                    self.onLog?("WARN", "页面提示「\(text.prefix(20))」——通常是没有登录态，"
+                        + "去「设置 → 登录抖音」")
+                }
+            }
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

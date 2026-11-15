@@ -1,4 +1,4 @@
-import Foundation
+﻿import Foundation
 import UIKit
 import BackgroundTasks
 
@@ -137,7 +137,7 @@ final class Store: ObservableObject {
         engine.onSkus = { [weak self] skus in
             Task { @MainActor in
                 guard let self, let t = self.tasks.first(where: { $0.id == task.id }) else { return }
-                self.evaluate(task: t, skus: skus)
+                await self.evaluate(task: t, skus: skus)
             }
         }
 

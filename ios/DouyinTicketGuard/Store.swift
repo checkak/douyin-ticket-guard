@@ -1,4 +1,4 @@
-import Foundation
+﻿import Foundation
 import UIKit
 import BackgroundTasks
 
@@ -170,15 +170,15 @@ final class Store: ObservableObject {
             let link = DeepLink.build(kind: task.linkKind, productID: task.productID,
                                       session: task.session, sku: sku.name, count: task.count)
             let event = HitEvent(task: task, sku: sku, link: link)
-            addLog(.hit, event.body())
+            addLog(.hit, event.message)
             fire(event)
         }
     }
 
     private func fire(_ event: HitEvent) {
-        Notifier.shared.local(title: "发现库存", body: event.body())
+        Notifier.shared.local(title: "发现库存", body: event.message)
         Notifier.shared.ring()
-        Notifier.shared.bark(deviceKey: barkKey, title: "发现库存", body: event.body(),
+        Notifier.shared.bark(deviceKey: barkKey, title: "发现库存", body: event.message,
                              url: event.link?.absoluteString) { [weak self] ok in
             Task { @MainActor in
                 self?.addLog(ok ? .info : .err, ok ? "Bark 推送成功" : "Bark 推送失败（检查 Key）")

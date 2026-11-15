@@ -35,6 +35,10 @@ struct WatchTask: Identifiable, Codable, Hashable {
     var scheduleAt: String = ""         // 定时 HH:mm
     var enabled: Bool = false
     var linkKind: String = "universal"  // universal | webview | show
+    var engine: String = "web"          // web = WKWebView 自动签名（推荐）| http = 直连（需 Cookie）
+    var landingURL: String = ""         // 短链展开后的落地页
+    var sessionTime: String = ""        // 从响应里挖到的场次（展示用）
+    var tierHint: String = ""           // 响应里挖到的票档摘要
 
     var title: String {
         var parts: [String] = []

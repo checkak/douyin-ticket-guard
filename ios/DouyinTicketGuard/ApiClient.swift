@@ -123,6 +123,76 @@ struct ApiClient {
         (0..<18).map { _ in String(Int.random(in: 0...9)) }.joined()
     }
 
+    // MARK: - 从任意响应里挖「演出名 / 场次 / 票价」
+
+    struct Meta {
+        var title: String = ""
+        var session: String = ""
+        var priceHints: [Double] = []
+        var rawKeys: [String] = []
+
+        var isEmpty: Bool { title.isEmpty && session.isEmpty && priceHints.isEmpty }
+    }
+
+    static func extractMeta(_ node: Any) -> Meta {
+        var meta = Meta()
+        var titles: [String] = []
+        var sessions: [String] = []
+        var keys = Set<String>()
+
+        func dateString(_ ts: Double) -> String {
+            let t = ts > 1_000_000_000_000 ? ts / 1000 : ts     // 毫秒兼容
+            let d = Date(timeIntervalSince1970: t)
+            let f = DateFormatter()
+            f.dateFormat = "yyyy-MM-dd HH:mm"
+            f.locale = Locale(identifier: "zh_CN")
+            f.timeZone = TimeZone(identifier: "Asia/Shanghai")
+            return f.string(from: d)
+        }
+
+        func asText(_ v: Any?) -> String? {
+            if let s = v as? String, !s.isEmpty {
+                if let n = Double(s), n > 1_600_000_000 { return dateString(n) }
+                return s
+            }
+            if let n = v as? Double { return n > 1_600_000_000 ? dateString(n) : nil }
+            if let i = v as? Int { return i > 1_600_000_000 ? dateString(Double(i)) : nil }
+            if let n = v as? NSNumber { return dateString(n.doubleValue) }
+            return nil
+        }
+
+        func walk(_ n: Any) {
+            if let d = n as? [String: Any] {
+                for (k, v) in d {
+                    let lk = k.lowercased()
+                    if ["title", "product_name", "show_name", "sku_name"].contains(lk),
+                       let s = v as? String, s.count >= 4, s.count <= 90 {
+                        titles.append(s)
+                    }
+                    if ["session_time", "show_time", "start_time", "valid_start",
+                        "begin_time", "session", "time_desc"].contains(lk),
+                       let s = asText(v) {
+                        sessions.append(s)
+                    }
+                    if lk.contains("sku") || lk.contains("stock") || lk.contains("price") {
+                        keys.insert(k)
+                    }
+                }
+                for (_, v) in d { walk(v) }
+            } else if let a = n as? [Any] {
+                for v in a { walk(v) }
+            }
+        }
+
+        walk(node)
+        meta.title = titles.first(where: { $0.contains("演唱会") || $0.contains("巡演") })
+            ?? titles.max(by: { $0.count < $1.count }) ?? ""
+        meta.session = sessions.first(where: { $0.contains("-") }) ?? sessions.first ?? ""
+        meta.priceHints = extractSkus(node).map { $0.priceYuan }
+        meta.rawKeys = keys.sorted()
+        return meta
+    }
+
     /// 容错遍历 JSON，捞出所有「库存 + 价格」节点
     static func extractSkus(_ node: Any) -> [Sku] {
         var found: [Sku] = []

@@ -1,4 +1,4 @@
-﻿import SwiftUI
+import SwiftUI
 import UIKit
 
 /// 对应视频 0:26 那一页：粘贴抖音订单链接 / cURL / HAR → 提取凭据与商品ID。
@@ -67,6 +67,15 @@ struct ImportView: View {
                         }
                         if !r.url.isEmpty, r.kind == "link" {
                             LabeledContent("链接", value: String(r.url.prefix(58)) + "…")
+                        }
+                    }
+
+                    if !r.note.isEmpty {
+                        Section("提示") {
+                            Label(r.note, systemImage: r.productID.isEmpty
+                                  ? "exclamationmark.triangle" : "info.circle")
+                                .font(.footnote)
+                                .foregroundStyle(r.productID.isEmpty ? .orange : .secondary)
                         }
                     }
 
@@ -169,6 +178,7 @@ struct SettingsView: View {
     @EnvironmentObject var store: Store
     @State private var probeResult: String = ""
     @State private var resolving = false
+    @State private var apiHost: String = ApiClient.customHost
 
     var body: some View {
         NavigationStack {
@@ -184,6 +194,22 @@ struct SettingsView: View {
                                              url: nil) { ok in
                             probeResult = ok ? "推送成功" : "推送失败，检查 Key"
                         }
+                    }
+                }
+
+                Section("接口集群") {
+                    TextField("life5-normal-m-zb.amemv.com", text: $apiHost)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.system(.caption, design: .monospaced))
+                        .onSubmit { ApiClient.customHost = apiHost.trimmingCharacters(in: .whitespaces) }
+                    Text("留空 = 自动轮询 4 个已知集群（zb / zjg / gl2 / lf）。"
+                         + "抓包里看到的那个域名填进来最省事。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("保存集群设置") {
+                        ApiClient.customHost = apiHost.trimmingCharacters(in: .whitespaces)
+                        probeResult = ApiClient.customHost.isEmpty
+                            ? "已切回自动轮询" : "已固定到 \(ApiClient.customHost)"
                     }
                 }
 

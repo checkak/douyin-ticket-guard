@@ -53,7 +53,21 @@ struct LoginSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("已登录") {
-                        store.addLog(.info, "登录流程结束，开始监控时会在同一 data store 里请求接口")
+                        WebCookieBridge.snapshot { names, logged in
+                            let key = ["sessionid", "sessionid_ss", "sid_guard", "uid_tt",
+                                       "d_ticket", "ttwid", "msToken"]
+                            let hit = names.filter { key.contains($0) }
+                            store.addLog(logged ? .info : .err,
+                                         logged
+                                         ? "网页容器已登录 ✅ 关键 cookie：\(hit.joined(separator: ", "))"
+                                         : "网页容器仍未登录 ❌（\(names.count) 个 cookie：\(hit.joined(separator: ", "))）")
+                            if logged {
+                                store.addLog(.info, "可以直接去监控页「开始监控」了")
+                            } else {
+                                store.addLog(.info, "改用 Safari 抓 H5 的 cURL 也行："
+                                    + "在「导入」里粘贴即可自动注入")
+                            }
+                        }
                         dismiss()
                     }
                 }

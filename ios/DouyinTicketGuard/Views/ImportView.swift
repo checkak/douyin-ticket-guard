@@ -1,4 +1,4 @@
-import SwiftUI
+﻿import SwiftUI
 import UIKit
 
 /// 对应视频 0:26 那一页：粘贴抖音订单链接 / cURL / HAR → 提取凭据与商品ID。
@@ -200,7 +200,7 @@ struct SettingsView: View {
                 }
 
                 Section("登录态") {
-                    Button("登录抖音（获取登录态）") { showLogin = true }
+                    Button("登录（在演出页域登录）") { showLogin = true }
                     Button("检测网页容器登录态") {
                         WebCookieBridge.snapshot { names, logged in
                             let key = ["sessionid", "sessionid_ss", "sid_guard", "uid_tt",

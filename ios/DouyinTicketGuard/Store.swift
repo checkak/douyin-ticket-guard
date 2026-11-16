@@ -166,6 +166,18 @@ final class Store: ObservableObject {
             addLog(.err, "落地页 URL 无效：\(landing)")
             return
         }
+        // 开跑前先看网页容器有没有登录态，没有就提前预警（避免又看到一堆 0 字节）
+        WebCookieBridge.snapshot { [weak self] names, logged in
+            Task { @MainActor in
+                guard let self else { return }
+                if logged {
+                    self.addLog(.info, "网页容器登录态正常（\(names.count) 个 cookie）")
+                } else {
+                    self.addLog(.err, "网页容器未登录——product/info 会返回 0 字节。"
+                        + "去「设置 → 登录抖音」，或在「导入」里粘一条带 Cookie 的 cURL")
+                }
+            }
+        }
         addLog(.info, "开始轮询（网页引擎）\(task.title)")
         engine.start(landingURL: url, interval: task.interval)
     }
